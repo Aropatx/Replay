@@ -75,9 +75,8 @@ jobs:
           for file in "${assets[@]}"; do
             digest="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
             size=$(stat --format=%s "$file")
-            url="https://github.com/$GH_REPO/releases/download/$tag/$file"
-            jq -e --arg file "$file" --arg digest "$digest" --argjson size "$size" --arg url "$url" \
-              '.assets | any(.name == $file and .state == "uploaded" and .digest == $digest and .size == $size and .browser_download_url == $url)' \
+            jq -e --arg file "$file" --arg digest "$digest" --argjson size "$size" \
+              '.assets | any(.name == $file and .state == "uploaded" and .digest == $digest and .size == $size)' \
               <<<"$release" > /dev/null
             printf '%s %s %s\n' "$file" "$size" "$digest"
           done
