@@ -1,0 +1,323 @@
+name: Build and test Replay 2.5.4 on Windows
+
+on:
+  push:
+    branches: [ffmpeg-source-20260831]
+    paths: [.github/workflows/validate-replay-2.5.4.yml]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Build the installer and test installation, upgrade and media
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repository = $env:GITHUB_REPOSITORY
+          $tag = 'v2.5.4'
+          $sourceName = 'ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz'
+          $ffmpegHash = 'c0c66f6b1483e986fa64e6e5ef2563deb8b9a65ce9872d8557a5232a3eeead72'
+          $ffprobeHash = '5c55e67cdf1e08db8c7857e5b34d2d7dae478304b32e3b7037580d01e6b4fb82'
+          $sourceHash = '46640c8c29ee3f07b4e9161a09157cc8357ed79085f4f2725bacb682be3adb7f'
+          $stage = Join-Path $env:RUNNER_TEMP 'replay-release-2.5.4'
+          $dist = Join-Path $stage 'dist'
+          New-Item -ItemType Directory -Path $stage,$dist | Out-Null
+          
+          function Assert-Hash([string]$Path, [string]$Hash) {
+              if ((Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -ne $Hash) {
+                  throw "Incorrect SHA-256 for $Path"
+              }
+          }
+          
+          function Invoke-Setup([string]$Installer, [string[]]$Options, [string]$LogName) {
+              $log = Join-Path $stage "$LogName.log"
+              $args = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/NOICONS',"/LOG=`"$log`"") + $Options
+              $process = Start-Process -FilePath $Installer -ArgumentList $args -WindowStyle Hidden -Wait -PassThru
+              if ($process.ExitCode -ne 0) {
+                  Get-Content -LiteralPath $log -Tail 70 -ErrorAction SilentlyContinue
+                  throw "$LogName failed with exit code $($process.ExitCode)"
+              }
+          }
+          
+          function Test-InstalledPayload([string]$Directory) {
+              $manifest = Join-Path $Directory 'payload-manifest.sha256'
+              $lines = Get-Content -LiteralPath $manifest
+              foreach ($line in $lines) {
+                  if ($line -notmatch '^([a-f0-9]{64})  (.+)$') { throw 'Invalid payload-manifest entry.' }
+                  Assert-Hash (Join-Path $Directory $Matches[2]) $Matches[1]
+              }
+              Write-Host "PASS installed payload matches all $($lines.Count) SHA-256 checksums"
+          }
+          
+          $archive = Join-Path $stage 'overlay.zip'
+          $parts = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'build-inputs') -Filter 'replay-2.5.4-overlay-*.b64' -File | Sort-Object Name
+          if ($parts.Count -ne 5) { throw 'Unexpected number of Replay inputs.' }
+          $base64 = ($parts | ForEach-Object { [IO.File]::ReadAllText($_.FullName).Trim() }) -join ''
+          [IO.File]::WriteAllBytes($archive, [Convert]::FromBase64String($base64))
+          Assert-Hash $archive '997d666ed0b85b4016bb36185d32d3b5cb904759990d7cb05c89c6c3e2c83901'
+          $unpacked = Join-Path $stage 'inputs'
+          Expand-Archive -LiteralPath $archive -DestinationPath $unpacked
+          $iconDir = Join-Path $unpacked 'GameClipper\Assets'
+          New-Item -ItemType Directory -Path $iconDir -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $unpacked 'Replay.ico') -Destination $iconDir
+          
+          $oldInstaller = Join-Path $stage 'Replay-2.5.3.exe'
+          Invoke-WebRequest -Uri "https://github.com/$repository/releases/download/v2.5.3/Replay-Setup.exe" -OutFile $oldInstaller
+          Assert-Hash $oldInstaller '914d2a4fb6b38fad9cd661cd0e1c02db358eb98692535a74bb555999e577102f'
+          $installed = Join-Path $stage 'installed'
+          Invoke-Setup $oldInstaller @('/LANG=english', "/DIR=`"$installed`"", '/REPLAYUPDATE=1') 'install-2.5.3'
+          Test-InstalledPayload $installed
+          if ((Get-Item -LiteralPath (Join-Path $installed 'Replay.dll')).VersionInfo.FileVersion -ne '2.5.3.0') {
+              throw 'The public 2.5.3 installer did not install the expected app version.'
+          }
+          $payload = Join-Path $stage 'payload'
+          New-Item -ItemType Directory -Path $payload | Out-Null
+          foreach ($line in (Get-Content -LiteralPath (Join-Path $installed 'payload-manifest.sha256'))) {
+              $relative = $line.Substring(66)
+              $destination = Join-Path $payload $relative
+              New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force | Out-Null
+              Copy-Item -LiteralPath (Join-Path $installed $relative) -Destination $destination
+          }
+          Copy-Item -Path (Join-Path $unpacked 'overlay\*') -Destination $payload -Recurse -Force
+          
+          $media = Join-Path $stage 'media'
+          & gh run download 45687311412 --repo $repository --name 'ffmpeg-9.1-Replay.1-win64' --dir $media
+          if ($LASTEXITCODE -ne 0) { throw 'Could not retrieve the verified FFmpeg binaries.' }
+          & gh run download 45687311412 --repo $repository --name 'ffmpeg-9.1-Replay.1-win64-source' --dir $dist
+          if ($LASTEXITCODE -ne 0) { throw 'Could not retrieve the corresponding FFmpeg sources.' }
+          
+          $source = Join-Path $dist $sourceName
+          Assert-Hash $source $sourceHash
+          Assert-Hash (Join-Path $media 'ffmpeg.exe') $ffmpegHash
+          Assert-Hash (Join-Path $media 'ffprobe.exe') $ffprobeHash
+          $mediaDir = Join-Path $payload 'tools\ffmpeg'
+          foreach ($name in 'ffmpeg.exe','ffprobe.exe','LICENSE.txt') {
+              Copy-Item -LiteralPath (Join-Path $media $name) -Destination $mediaDir -Force
+          }
+          $config = foreach ($name in 'ffmpeg.exe','ffprobe.exe') {
+              $version = & (Join-Path $mediaDir $name) -version
+              if ($LASTEXITCODE -ne 0 -or $version[0] -notmatch ('^' + [IO.Path]::GetFileNameWithoutExtension($name) + ' version 9\.1-Replay\.1\b')) {
+                  throw "Unexpected version for $name"
+              }
+              $version
+              ''
+          }
+          $config | Set-Content -LiteralPath (Join-Path $mediaDir 'BUILD-CONFIGURATION.txt') -Encoding utf8
+          $encoders = & (Join-Path $mediaDir 'ffmpeg.exe') -hide_banner -encoders
+          foreach ($name in 'libx264','h264_nvenc','h264_qsv','h264_amf','aac','libmp3lame') {
+              if (($encoders -join "`n") -notmatch "\b$name\b") { throw "Missing encoder $name" }
+          }
+          Write-Host 'PASS the packaged FFmpeg exposes the software encoder and all three hardware encoders'
+          
+          $downloads = "https://github.com/$repository/releases/download/$tag"
+          [ordered]@{
+              version = '9.1-Replay.1'
+              variant = 'Windows x64 GPL static'
+              license = 'GPL-3.0-or-later'
+              upstreamSource = 'https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz'
+              upstreamSourceSha256 = '1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433'
+              buildRecipesCommit = '58c59698c3bd3cb70cf032ca1d6c291164309179'
+              buildRun = "https://github.com/$repository/actions/runs/45687311412"
+              binaries = [ordered]@{ 'ffmpeg.exe' = $ffmpegHash; 'ffprobe.exe' = $ffprobeHash }
+              sourceArchive = [ordered]@{ name = $sourceName; sha256 = $sourceHash }
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $mediaDir 'build.json') -Encoding utf8
+          @"
+          FFmpeg and ffprobe 9.1-Replay.1, Windows x64
+          Copyright (c) the FFmpeg developers and the bundled library contributors.
+          
+          GNU General Public License version 3 or later. See LICENSE.txt, the bundled
+          library notices, BUILD-CONFIGURATION.txt and build.json.
+          
+          Corresponding source code, dependency sources and build scripts
+          $downloads/$sourceName
+          SHA-256: $sourceHash
+          
+          Replay runs these tools as separate processes through their command-line interfaces.
+          "@ | Set-Content -LiteralPath (Join-Path $mediaDir 'NOTICE.txt') -Encoding utf8
+          
+          $collectLicenses = @'
+          import io
+          import pathlib
+          import re
+          import sys
+          import tarfile
+          
+          package, output = sys.argv[1:3]
+          licenses = pathlib.Path(output, "dependency-licenses")
+          licenses.mkdir()
+          prefixes = ("COPYING", "LICENSE", "NOTICE", "COPYRIGHT")
+          components = (
+              ("FFmpeg", "ffmpeg-9.1.tar.xz"),
+              ("x264", "x264-0480cb05fa.tar.gz"),
+              ("LAME", "lame_3.100.orig.tar.gz"),
+              ("Intel-VPL", "libvpl-674d015b.tar.gz"),
+              ("NVIDIA-nv-codec-headers", "nv-codec-headers-eddcea9e.tar.gz"),
+              ("AMD-AMF-headers", "AMF-headers-v1.5.3.tar.gz"),
+          )
+          with tarfile.open(package, "r:gz") as bundle:
+              files = {item.name.removeprefix("./"): item for item in bundle.getmembers() if item.isfile()}
+              for component, filename in components:
+                  source = io.BytesIO(bundle.extractfile(files["sources/" + filename]).read())
+                  count = 0
+                  with tarfile.open(fileobj=source, mode="r:*") as upstream:
+                      for item in upstream.getmembers():
+                          path = pathlib.PurePosixPath(item.name)
+                          if not item.isfile() or item.size > 250000:
+                              continue
+                          if len(path.parts) <= 2 and path.name.upper().startswith(prefixes):
+                              data = upstream.extractfile(item).read()
+                          elif (component == "NVIDIA-nv-codec-headers" and path.name == "nvEncodeAPI.h"
+                                or component == "AMD-AMF-headers" and path.name == "Version.h"
+                                and path.parent.name == "core"):
+                              header = upstream.extractfile(item).read(12000)
+                              license_text = re.search(rb"/\*[\s\S]*?Permission is hereby granted[\s\S]*?\*/", header, re.I)
+                              if not license_text:
+                                  continue
+                              data = license_text.group() + b"\n"
+                          else:
+                              continue
+                          (licenses / (component + "-" + path.name + ".txt")).write_bytes(data)
+                          count += 1
+                  if not count:
+                      raise SystemExit("Missing bundled license for " + component)
+                  print("PASS copied", count, "license or notice files for", component)
+              for name, item in files.items():
+                  if name.startswith("toolchain/") and name.endswith("-COPYRIGHT.txt"):
+                      (licenses / pathlib.PurePosixPath(name).name).write_bytes(bundle.extractfile(item).read())
+          '@
+          $collectLicenses | python - $source $mediaDir
+          if ($LASTEXITCODE -ne 0) { throw 'Could not verify third-party license texts.' }
+          
+          $manifest = foreach ($file in (Get-ChildItem -LiteralPath $payload -File -Recurse | Sort-Object FullName)) {
+              $relative = $file.FullName.Substring($payload.Length + 1).Replace('\','/')
+              '{0}  {1}' -f (Get-FileHash -LiteralPath $file.FullName).Hash.ToLowerInvariant(), $relative
+          }
+          $manifest | Set-Content -LiteralPath (Join-Path $payload 'payload-manifest.sha256') -Encoding utf8
+          
+          $innoDownload = Join-Path $stage 'inno-7.1.1.exe'
+          $compilerDir = Join-Path $stage 'inno'
+          Invoke-WebRequest -Uri 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $innoDownload
+          $signature = Get-AuthenticodeSignature -LiteralPath $innoDownload
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Pyrsys B.V.*') {
+              throw 'Invalid Inno Setup signature.'
+          }
+          Invoke-Setup $innoDownload @('/PORTABLE=1','/CURRENTUSER',"/DIR=`"$compilerDir`"") 'prepare-inno'
+          $compiler = Join-Path $compilerDir 'ISCC.exe'
+          $signature = Get-AuthenticodeSignature -LiteralPath $compiler
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Pyrsys B.V.*') {
+              throw 'Invalid Inno Setup compiler signature.'
+          }
+          $installerScript = Join-Path $unpacked 'installer\Replay.iss'
+          & $compiler /Qp '/DAppVersion=2.5.4' "/DPayloadDir=$payload" "/DOutputFolder=$dist" $installerScript
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed.' }
+          $newInstaller = Join-Path $dist 'Replay-Setup-2.5.4-x64.exe'
+          $installerHash = (Get-FileHash -LiteralPath $newInstaller).Hash.ToLowerInvariant()
+          Copy-Item -LiteralPath $newInstaller -Destination (Join-Path $dist 'Replay-Setup.exe')
+          foreach ($name in 'Replay-Setup.exe','Replay-Setup-2.5.4-x64.exe') {
+              "$installerHash  $name" | Set-Content -LiteralPath (Join-Path $dist "$name.sha256") -Encoding ascii
+          }
+          Write-Host "Replay-Setup.exe SHA-256 $installerHash"
+          
+          $settingsDir = Join-Path $env:LOCALAPPDATA 'Replay'
+          $settings = Join-Path $settingsDir 'settings.json'
+          if ((Get-Content -LiteralPath $settings -Raw | ConvertFrom-Json).Language -ne 'en') {
+              throw 'The initial settings from the older installer were not created.'
+          }
+          $knownClip = Join-Path $stage 'existing-user-clip.mp4'
+          & (Join-Path $installed 'tools\ffmpeg\ffmpeg.exe') -v error -f lavfi -i 'testsrc2=s=320x180:r=30' -f lavfi -i 'sine=frequency=830' -t 2 -c:v libx264 -c:a aac -y $knownClip
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create the existing clip fixture.' }
+          @{Language='en'; MaxHeight=720; PreferGpu=$true; ClipFolder=$stage} | ConvertTo-Json |
+              Set-Content -LiteralPath $settings -Encoding utf8
+          $settingsHash = (Get-FileHash -LiteralPath $settings).Hash
+          $existingClipHash = (Get-FileHash -LiteralPath $knownClip).Hash
+          $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          $startup = '"' + (Join-Path $installed 'Replay.exe') + '" --startup'
+          New-ItemProperty -LiteralPath $runKey -Name Replay -Value $startup -PropertyType String -Force | Out-Null
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{D8574552-AF91-4974-9B3B-22F58F0B1FB4}_is1'
+          Invoke-Setup $newInstaller @('/LANG=polish','/REPLAYUPDATE=1') 'upgrade-2.5.3-to-2.5.4'
+          if ((Get-ItemProperty -LiteralPath $uninstallKey).DisplayVersion -ne '2.5.4' -or
+              (Get-Item -LiteralPath (Join-Path $installed 'Replay.dll')).VersionInfo.FileVersion -ne '2.5.4.0' -or
+              (Get-ItemPropertyValue -LiteralPath $runKey -Name Replay) -ne $startup) {
+              throw 'The update changed the installation identity, location or startup selection.'
+          }
+          Assert-Hash $settings $settingsHash
+          Assert-Hash $knownClip $existingClipHash
+          Test-InstalledPayload $installed
+          Write-Host 'PASS update from the public 2.5.3 keeps the installation, startup entry, settings and existing clip'
+          
+          $uninstall = Get-ChildItem -LiteralPath $installed -Filter 'unins???.exe' -File | Select-Object -First 1
+          if (-not $uninstall) { throw 'Missing uninstaller.' }
+          Invoke-Setup $uninstall.FullName @() 'uninstall-test-copy'
+          if ((Test-Path -LiteralPath $uninstallKey) -or (Test-Path -LiteralPath (Join-Path $installed 'Replay.dll'))) {
+              throw 'The test installation was not removed.'
+          }
+          Assert-Hash $settings $settingsHash
+          Assert-Hash $knownClip $existingClipHash
+          Move-Item -LiteralPath $settings -Destination (Join-Path $stage 'old-test-settings.json')
+          
+          $fresh = Join-Path $stage 'clean-install'
+          Invoke-Setup $newInstaller @('/LANG=polish',"/DIR=`"$fresh`"",'/TASKS=""') 'clean-install-2.5.4'
+          Test-InstalledPayload $fresh
+          if ((Get-Content -LiteralPath $settings -Raw | ConvertFrom-Json).Language -ne 'pl' -or
+              (Get-Item -LiteralPath (Join-Path $fresh 'Replay.dll')).VersionInfo.FileVersion -ne '2.5.4.0') {
+              throw 'Clean installation did not pick up the expected version and language.'
+          }
+          Assert-Hash (Join-Path $fresh 'tools\ffmpeg\ffmpeg.exe') $ffmpegHash
+          Assert-Hash (Join-Path $fresh 'tools\ffmpeg\ffprobe.exe') $ffprobeHash
+          Write-Host 'PASS clean installation creates a Polish first-run profile and installs the exact tools and notices'
+           
+          $testRuntime = Join-Path $stage 'test-runtime'
+          New-Item -ItemType Directory -Path $testRuntime | Out-Null
+          Copy-Item -Path (Join-Path $fresh '*') -Destination $testRuntime -Recurse
+          Copy-Item -Path (Join-Path $unpacked 'tests\*') -Destination $testRuntime
+          $env:REPLAY_HOME = Join-Path $stage 'qa-profile'
+          $tests = Join-Path $testRuntime 'SmokeTests.dll'
+          & dotnet $tests (Join-Path $stage 'studio') --studio
+          if ($LASTEXITCODE -ne 0) { throw 'Replay studio media checks failed.' }
+          & dotnet $tests (Join-Path $stage 'updater') --updates
+          if ($LASTEXITCODE -ne 0) { throw 'Replay updater checks failed.' }
+          & dotnet $tests (Join-Path $stage 'studio-playback') --studio --playback
+          if ($LASTEXITCODE -ne 0) {
+              Write-Warning 'The Windows runner could not complete native media playback. The FFmpeg trim and stream checks passed.'
+          }
+          
+          $notes = Join-Path $dist 'release-notes-2.5.4.md'
+          @"
+          [Pobierz Replay 2.5.4 dla Windows]($downloads/Replay-Setup.exe)
+          
+          [Pobierz kompletne źródła FFmpeg i ffprobe 9.1-Replay.1]($downloads/$sourceName)
+          
+          Replay 2.5.4 zawiera własną kompilację FFmpeg 9.1 dla Windows x64. Archiwum źródłowe zawiera kod FFmpeg, źródła wykorzystanych bibliotek, skrypt budowania oraz informacje o narzędziach i licencjach. Warunki GNU GPL w wersji 3 lub nowszej znajdziesz w folderze tools/ffmpeg.
+          
+          Aktualizacja zachowuje dotychczasowy katalog instalacji, ustawienia, autostart i klipy. Zainstalowany Replay pobiera aktualizację przez GitHub Releases.
+          
+          [SHA-256 instalatora]($downloads/Replay-Setup.exe.sha256) · [SHA-256 źródeł]($downloads/$sourceName.sha256)
+          "@ | Set-Content -LiteralPath $notes -Encoding utf8
+          @{
+              version = '2.5.4'
+              sha256 = $installerHash
+              ffmpegVersion = '9.1-Replay.1'
+              ffmpegBinaries = @{ 'ffmpeg.exe' = $ffmpegHash; 'ffprobe.exe' = $ffprobeHash }
+              ffmpegSourceArchive = $sourceName
+              ffmpegSourceSha256 = $sourceHash
+              testBuild = $false
+          } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $dist 'build-info.json') -Encoding utf8
+          Copy-Item -LiteralPath (Join-Path $fresh 'payload-manifest.sha256') -Destination $dist
+          Get-ChildItem -LiteralPath $dist -File | ForEach-Object { Write-Host "$($_.Name) $($_.Length) $((Get-FileHash -LiteralPath $_.FullName).Hash.ToLowerInvariant())" }
+      - name: Attach the verified installer and release text
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Replay-2.5.4-verified-release-files
+          path: ${{ runner.temp }}/replay-release-2.5.4/dist/
+          compression-level: 0
+          if-no-files-found: error
