@@ -176,11 +176,10 @@ jobs:
                               continue
                           if len(path.parts) <= 2 and path.name.upper().startswith(prefixes):
                               data = upstream.extractfile(item).read()
-                          elif (component == "NVIDIA-nv-codec-headers" and path.name == "nvEncodeAPI.h"
-                                or component == "AMD-AMF-headers" and path.name == "Version.h"
-                                and path.parent.name == "core"):
+                          elif (component == "NVIDIA-nv-codec-headers" and path.suffix == ".h"
+                                or component == "AMD-AMF-headers" and path.suffix == ".h"):
                               header = upstream.extractfile(item).read(12000)
-                              license_text = re.search(rb"/\*[\s\S]*?Permission is hereby granted[\s\S]*?\*/", header, re.I)
+                              license_text = re.search(rb"/\*[\s\S]*?Permission\s+is\s+hereby\s+granted[\s\S]*?\*/", header, re.I)
                               if not license_text:
                                   continue
                               data = license_text.group() + b"\n"
