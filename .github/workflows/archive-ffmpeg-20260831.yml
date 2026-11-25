@@ -1,0 +1,180 @@
+name: Archive corresponding FFmpeg sources
+
+on:
+  push:
+    branches: [ffmpeg-source-20260831]
+    paths: [.github/workflows/archive-ffmpeg-20260831.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Fetch and verify the exact upstream build inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/build-recipes dist
+          fetch() { curl --fail --silent --show-error --location --retry 2 --max-time 600 "$1" --output "$2"; }
+
+          fetch 'https://nightly.link/yt-dlp/FFmpeg-Builds/actions/artifacts/9773054143.zip' build-cache.zip
+          echo '061d766e8398a9a0e46a44527ecd986ae1cac63a70faa2ef2db58ed0b8db3eac  build-cache.zip' | sha256sum -c
+          unzip -p build-cache.zip cache.tar.gz > build-cache.tar.gz
+
+          fetch 'https://github.com/FFmpeg/FFmpeg/archive/089a48eb36b2c0d185867522a1fc2613b5bbb96f.tar.gz' bundle/ffmpeg-089a48eb36.tar.gz
+          fetch 'https://github.com/yt-dlp/FFmpeg-Builds/archive/ea2ec3c0e0dfb11069729b7df5cb234bb2145956.tar.gz' recipes.tar.gz
+          tar -xzf recipes.tar.gz -C bundle/build-recipes --strip-components=1
+
+          fetch 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/autobuild-2026-08-31-20-15/ffmpeg-N-126374-g089a48eb36-win64-gpl.zip' binaries.zip
+          echo 'fc496061ed2cc5264d7c9c4ec929365f15267aeb40c94fd34ce637a0ea6ce229  binaries.zip' | sha256sum -c
+          unzip -p binaries.zip '*/bin/ffmpeg.exe' | sha256sum | grep -Fqx 'b9989f24e63be74e72aa45fec10a114ce660b562e4303d5f296f4fc8ba7cc896  -'
+          unzip -p binaries.zip '*/bin/ffprobe.exe' | sha256sum | grep -Fqx '73842bee6f270e85b2ab6fc3cfa715f614f16ad16700f5de6a9c1a2865cacf00  -'
+          unzip -p binaries.zip '*/LICENSE.txt' > bundle/COPYING.GPLv3
+          tar -xOf bundle/ffmpeg-089a48eb36.tar.gz --wildcards '*/COPYING.GPLv3' | cmp - bundle/COPYING.GPLv3
+
+          # Input names below are the exact BuildKit mounts logged by job 99621788617.
+          cat > sources.list <<'LIST'
+          .cache/downloads/10-mingw-std-threads_f6fe5dc5a067e90cd8b37a748b33962ac2eb09f3b486b287265803070dbf02d2.tar.xz
+          .cache/downloads/10-mingw_085e09c5ef82fb3dcde052a2f5de92445435bea8d3766db035b6d5483d3eacf9.tar.xz
+          .cache/downloads/20-libiconv_a820eb1a2cb6f2232acc997f363eaf56b72c509dfd979fa029a13e9278f1872a.tar.xz
+          .cache/downloads/20-zlib_132d135e890f221364f5e66a4293ae247c65dd02d42b44d3ea02af0eeb35154a.tar.xz
+          .cache/downloads/25-fftw3_f590d55efb2139d10bea09f7f3542f648290d35fc2ecb3122d6896bf2af049e3.tar.xz
+          .cache/downloads/25-freetype_3617370b1dcde7476f60c6ba4fa9936d9dffa84a83db01be118439c6f7ea2c44.tar.xz
+          .cache/downloads/25-fribidi_81b289b370baa994885c0e56a7929b51bbb80ba7574d0edaa629dda7a032ba58.tar.xz
+          .cache/downloads/25-gmp_4b555c079737ef0f01f15976d7bbbff9d0dc94d7a06edd45d08a6cd2b60bdb86.tar.xz
+          .cache/downloads/25-libogg_bdea5ee518d129340be457dcc11c2cef63053ac3c827e71311caff1dd3c43339.tar.xz
+          .cache/downloads/25-libpng_f695ee41ddfc411ac8050d7d4ee5ec37a63db25183186f120bcfa6056d5e8b07.tar.xz
+          .cache/downloads/25-libxml2_616eedaefdac4bc11ac6b560da97776a32faa86a4293e7c70fd443eca9ea9f80.tar.xz
+          .cache/downloads/25-openssl_9b34fe90db7bf8486ec3d2bb51d8a347e64cdcbf340f615f8db1755c77156e65.tar.xz
+          .cache/downloads/25-xz_373b29db9b20aa43988369e7b654a2ab7daf1c79c9a7171d039fdc0f2edc3f95.tar.xz
+          .cache/downloads/30-libdvdcss_8e6c469595eeef1d2ca7962b68faabe5531518009472d449f700665a616bc66c.tar.xz
+          .cache/downloads/35-fontconfig_656d09390348e307aa170d43ac674665ab0508eacc86601d9f5812e413fdf479.tar.xz
+          .cache/downloads/40-libdvdread_6a9029f598b07c8f1d9c6691b79cf5c3bbffee1b7a99fd3f65410ae663f65a37.tar.xz
+          .cache/downloads/40-mbedtls_8dd146455b388b9a7236d83bb2904ff89bba41fa28da9af8a310fc01f4ff1b53.tar.xz
+          .cache/downloads/40-vulkan-headers_fe6a3585343162c3c350aee116b2c311fd11b66c0307422b7c204b1645bafde2.tar.xz
+          .cache/downloads/45-brotli_f6d0fe763664761aac7c59dba98fff76310597c0f90a8f42f7631376d615e196.tar.xz
+          .cache/downloads/45-harfbuzz_596d9d91bebaf3c3a72bd614b9a1a386c1cd4ce7514760f428323369c5a1b304.tar.xz
+          .cache/downloads/45-lcms2_9bf96e71e5ca747e82781112fad718a036f4c45981112ebf3da56d896bd808ce.tar.xz
+          .cache/downloads/45-libsamplerate_3ae5a3324e89da0d7254873085ad23e2b1a0cb22c1e330b8d3beb1da0a0c0273.tar.xz
+          .cache/downloads/45-libudfread_025a841e2bc919a8fc0fe8d8290df4ff52e12e3d72cb7cbaaf7df6c7552c2a78.tar.xz
+          .cache/downloads/45-libunibreak_b853ebf9bfeb5a24db32ac3024fcb2b90a1f6906e146295a9611ea367ef90197.tar.xz
+          .cache/downloads/45-libvorbis_0ab43e5711b2585b0c19dd71023f5852d755c633bda0215caad53dc63c62a644.tar.xz
+          .cache/downloads/45-opencl_eb9ead58354213261f2a045939284465ec36e0e3e052aa3b22e279002a94d002.tar.xz
+          .cache/downloads/45-vmaf_7e0936eea87afd4c4582aca102f105349e760b2c04bba3880d2b82ddc9ec50bc.tar.xz
+          .cache/downloads/45-vulkan-loader_9737f99883713bfebd417a68bdd2d4046d3678249b723a676ac386da128fd315.tar.xz
+          .cache/downloads/50-amf_c691021656d6ced1df998c54494b9d1bb1aefecc1100af7f4b5d2d2ee89cad44.tar.xz
+          .cache/downloads/50-aom_23565bf906e76056043bbf69491946f43e4a082de1c9448304970e7e1f38c77c.tar.xz
+          .cache/downloads/50-avisynth_7a21bb0ff397cafe4904c6be10b96944b5f19ea01e1871a76204ee0d384e7488.tar.xz
+          .cache/downloads/50-chromaprint_fd1913f99597fe11aa0a070aaaee173d271d06a2578bd240a1e6f9d7e5d9e344.tar.xz
+          .cache/downloads/50-dav1d_c641f552ea978b810b07c1d57cb7e8a3fe53e7114439817aabc12815250a342f.tar.xz
+          .cache/downloads/50-davs2_a2d3a5d05dbd810e7a33f41ca77f70f1775ab8318ffe3e1b365105e8ad813d7e.tar.xz
+          .cache/downloads/50-ffnvcodec_ef2a38b483abf36f56dfe74a3ab3909ef01360a01619123b6a4cfac4eece7e28.tar.xz
+          .cache/downloads/50-freetype_3617370b1dcde7476f60c6ba4fa9936d9dffa84a83db01be118439c6f7ea2c44.tar.xz
+          .cache/downloads/50-frei0r_133425a6de12ece3f31f1fab0e5e228703fdffa3d347dcac946a9621531acbe7.tar.xz
+          .cache/downloads/50-gme_0325438874b3d8664746a5dc5587ca3da46cd7c1ff911cd20f095fc3355618d5.tar.xz
+          .cache/downloads/50-kvazaar_36ba4fecb23c3c52d829030be410feb99cf26cb09ddecc0108d24aa538a0f99c.tar.xz
+          .cache/downloads/50-lcevcdec_74a493e06a33c4de0c2adcc72118cd80f1f80ed756ba9948c92ac5d0e369f1c9.tar.xz
+          .cache/downloads/50-libaribb24_3dd74ffb861f7ef9133dab074b9845408d84ebc49db9aee5d91829efba6d52ce.tar.xz
+          .cache/downloads/50-libaribcaption_8315a724d2e43047c02fb15f99a6decc2824fd4abd55c795ca1063dca443bf8e.tar.xz
+          .cache/downloads/50-libass_eb0a72fee1bb9fe0003a273d115a36b08666ddc47934821affb006da826afdf2.tar.xz
+          .cache/downloads/50-libbluray_f1d8f0cf739b62e26267eeec08f3f9bfc61b1a524e8b108ddbf61ee7d639ca60.tar.xz
+          .cache/downloads/50-libcurl_045d84447a599a727f2e84fbc750e12a4a2003ac1d5d96ce442c47bdd5bad33a.tar.xz
+          .cache/downloads/50-libdvdnav_b2d802a9d3c953740f05e04c01bb9764d1517818b7282160652586a93b9bbf5b.tar.xz
+          .cache/downloads/50-libjxl_d3647c8fb1cbd9d0180d65e147860283132056b94f1ef29aadfcf41e32e7c3d9.tar.xz
+          .cache/downloads/50-libmp3lame_f2f7446b57b288ce67fc1343304ab42c69083e24cf9e6a16d47c5f511b43e248.tar.xz
+          .cache/downloads/50-libopus_d5d6bff35ed4cca25b341844c0f89c9f98b625b904750bdd960722ea107e9a60.tar.xz
+          .cache/downloads/50-libplacebo_f8a8cad5ba86c94e40a07e9f5d43a53f07329c10df7918b410f47ebc2969ef0e.tar.xz
+          .cache/downloads/50-librist_c44a5e59d58d44b672c8df850ae76b4ad372ebab3a4a63a003ac35d45aa9d1a2.tar.xz
+          .cache/downloads/50-libssh_4eaec4486b9a325624c84dc08381575f89816f8c201bc671e892acafaef521bf.tar.xz
+          .cache/downloads/50-libtheora_c5b1505081f2493a61c94a64ef8eef6de9b851447fab834bd5f9b6e35ee1d008.tar.xz
+          .cache/downloads/50-libva_2bc55ab7571e4ab9d59dc473d3dfaebb2cbc6caca5da95e1e680eaae56e62d03.tar.xz
+          .cache/downloads/50-libvpx_e1d9ee3f918e52bb06f3858a94d08f885b37db2fcfb791247d6b24f1e6c4f3fd.tar.xz
+          .cache/downloads/50-libwebp_217ee867d83c944da9171546b230ff0c4026fc894b9a55682487dea9e70c92b1.tar.xz
+          .cache/downloads/50-libzmq_e68f6ea67cc2e84e0b320f3a4b5538dc90d97142264dc310dd8bbcb5f989d9e2.tar.xz
+          .cache/downloads/50-onevpl_c67accd07bdf24795034753f097eec4331f1a1174ce643cf5bcf94cb26ddd5e4.tar.xz
+          .cache/downloads/50-openal_9c4ba41173fbaca308a4f97075b9938783fad976a0c557787e3d5435c8a52afd.tar.xz
+          .cache/downloads/50-openapv_83b28fa418843fb59bd5e85c20fcb7e1c4b97d66e1d70000d258d50863ed39e1.tar.xz
+          .cache/downloads/50-opencore-amr_5d7ec3b8ffdd0f32309a659256916e3286724f08acf0f625a4b4f1f9c17ebf7c.tar.xz
+          .cache/downloads/50-openh264_28d2712432b4516dd771baa4199bc82aa79766600e4395fc9c88780f5dd3b319.tar.xz
+          .cache/downloads/50-openjpeg_70f1c086f3e1fbc7af66c8e90d16c1fb0a55353eadc4f2428b4ba02c32e0ffe2.tar.xz
+          .cache/downloads/50-openmpt_170dbcf92e1eeb66ecbc1fafbe525a77ceca3b6d5719bbe71cce38ec3f7f598a.tar.xz
+          .cache/downloads/50-rav1e_f5502fba0839b77e72f498941acc6b52cd25845005fff70a9f22bff369d96d24.tar.xz
+          .cache/downloads/50-rubberband_5d3ca7b4a1f4c07ead3f23ba9c7a3736384a9394a34e41bf70a78075e0ed9593.tar.xz
+          .cache/downloads/50-sdl_39aa248e02f3e880f3562110b8d35ed9933fd8e2629b360a16a41066de1832b2.tar.xz
+          .cache/downloads/50-shaderc_2a061b889468985d41c31e635f79a418277e3a87892a8235abf3b907ced27e6e.tar.xz
+          .cache/downloads/50-snappy_d8a43fb0eb02bc90350183462075a5b32ba7aefd0b5fa1552eee898a06fec5ba.tar.xz
+          .cache/downloads/50-soxr_d24c000584012b62b406f09325af85575932219b972b87ab3e2b1037bdc97c6a.tar.xz
+          .cache/downloads/50-srt_9ab50c21c12c46d2bb1f3be5bc86fab97365761a25ed88d64ad21ff275416d35.tar.xz
+          .cache/downloads/50-svtav1_bc68c167d279f46395f6f2517d3f2e6588916353912ac46897c3d53afbd361f5.tar.xz
+          .cache/downloads/50-twolame_b034b56f3c8caa730922980b6e8aca15c6f3b46e3fa98d3229c337aeb7858f71.tar.xz
+          .cache/downloads/50-uavs3d_f5c1983f0fc2360d5846298e08a8f89f2f345caa3beb83100ca9b48eff5ded6b.tar.xz
+          .cache/downloads/50-vidstab_64146de3a036c50996d0c9d19ebf22fd9ff0fb0adde303ebc089f356187eaf68.tar.xz
+          .cache/downloads/50-vvenc_faf7d4eedba9449f57440351627584d9bd96be053613d223bfe89f29e5120bc3.tar.xz
+          .cache/downloads/50-x264_7aee4cf46b7c0eff1a5ad3d23ae43a29562065ef2866a4a883d7ad2db0fb755d.tar.xz
+          .cache/downloads/50-x265_f5451b1fd1b436572157ea0d3fa22ad43fe83aac3640a6fcbaee0b5a8cec15bf.tar.xz
+          .cache/downloads/50-xavs2_983aacbab6d33318bf9c4742b41a1ed9d42afc12a0493ba97d07404a99734009.tar.xz
+          .cache/downloads/50-xvid_03619a39e7e15a372b56fc954435c35668ed47258d7e7d3f2e47ba521e3b884f.tar.xz
+          .cache/downloads/50-zimg_1b68d28a887f9b08c573b5e1dd54c4954cc91a8cdfb6d272905a1dc5d8d4d1a1.tar.xz
+          .cache/downloads/50-zvbi_7369ec5938a995eb4283992070b303e140fc8a3b5f53d80e2a5df0b84794a75b.tar.xz
+          .cache/downloads/55-spirv-cross_beb52c3f40fbf31adb47a273fe38150d3bef886646a55550484ca13a4475c8b7.tar.xz
+          .cache/downloads/60-spirv-headers_635d9044201a4b38732e08b4078f951e570e32f2d510c10c8c372daf9ad5bba6.tar.xz
+          .cache/downloads/96-lv2_1833e554a5a1760aa41062569225bbb9856f09f3c23d37301074d82a17b0624e.tar.xz
+          .cache/downloads/96-serd_257c27b8651c05a3b7179f2477bd69ed036feac4eb253312569096821e69a8e7.tar.xz
+          .cache/downloads/96-zix_21e780c9ab8c0f8067c36bb53b76fcabc2dd828153b3f1ab082ed44281f62d13.tar.xz
+          .cache/downloads/97-sord_6ef433b3c59e64a645002e31f929dfec02cbd979f0d70b5373173e1ca217125d.tar.xz
+          .cache/downloads/98-sratom_a7e01a157b247bfecbce4a5c63016fa503ddd5703ffc208af3f81805a7d30535.tar.xz
+          .cache/downloads/99-lilv_0543a3c15e7971c2371260e51aad5ead6ffbc7a539de39540a906ebf944d829d.tar.xz
+          LIST
+          tar -xzf build-cache.tar.gz -C bundle/build-recipes -T sources.list
+          while read -r input; do test -s "bundle/build-recipes/$input"; done < sources.list
+          test "$(wc -l < sources.list)" -eq 90
+          test -z "$(find bundle/build-recipes/patches/ffmpeg -type f -name '*.patch' -print -quit)"
+          test -n "$(find bundle/build-recipes/patches/aom -type f -name '*.patch' -print -quit)"
+          test -n "$(find bundle/build-recipes/patches/aribb24 -type f -name '*.patch' -print -quit)"
+          cp sources.list bundle/build-inputs.txt
+          rm build-cache.zip build-cache.tar.gz binaries.zip recipes.tar.gz
+
+          cat > bundle/README.md <<'README'
+          # Corresponding source for FFmpeg and ffprobe shipped with Replay
+
+          FFmpeg N-126374-g089a48eb36-20260831, x86_64 Windows, static, GPL-3.0-or-later.
+
+          FFmpeg: 089a48eb36b2c0d185867522a1fc2613b5bbb96f.
+          Build recipes: yt-dlp/FFmpeg-Builds ea2ec3c0e0dfb11069729b7df5cb234bb2145956.
+          Upstream workflow run 33431833698. Source-input cache artifact 9773054143.
+          The original win64 GPL variant image was recorded as
+          ghcr.io/yt-dlp/ffmpeg-builds/win64-gpl@sha256:2fbe4cdc82e50a5ce0387fce8b2b1bf1ce6db4f252b39cf66e0d066d855e2358.
+
+          The FFmpeg source is in ffmpeg-089a48eb36.tar.gz. The build recipes contain
+          the original Dockerfiles, configuration, target variant, dependency recipes
+          and patches. The upstream build used no FFmpeg source patches. Its dependency
+          stages include the AOM and aribb24 patches in build-recipes/patches.
+          The numbered archives in build-recipes/.cache/downloads are the 90 inputs
+          mounted by the Windows x64 GPL variant job, listed in build-inputs.txt.
+
+          See build-recipes/.github/workflows/build.yml for the original build order and
+          build-recipes/build.sh and generate.sh for the configure and image setup.
+          Build the win64/gpl variant using the included dependency cache. For a
+          reconstruction, pin the FFmpeg checkout to the commit above instead of
+          building the current master. The build date suffix is 20260831. The original
+          toolchain was GCC 15.2.0, crosstool-NG 1.28.0.23_185f348, using
+          build-recipes/images/base-win64/ct-ng-config.
+          README
+          (cd bundle && find . -type f -print0 | sort -z | xargs -0 sha256sum) > sources.sha256
+          mv sources.sha256 bundle/
+          (cd bundle && sha256sum -c sources.sha256 --quiet)
+
+          archive=ffmpeg-N-126374-g089a48eb36-win64-gpl-corresponding-source.tar.gz
+          tar -czf "dist/$archive" -C bundle .
+          (cd dist && sha256sum "$archive" > "$archive.sha256")
+          cat "dist/$archive.sha256" >> "$GITHUB_STEP_SUMMARY"
+      - name: Attach the corresponding-source archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ffmpeg-N-126374-g089a48eb36-win64-gpl-source
+          path: dist/
+          compression-level: 0
+          if-no-files-found: error
