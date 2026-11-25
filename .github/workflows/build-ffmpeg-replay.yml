@@ -1,0 +1,182 @@
+name: Build FFmpeg 9.1 for Replay
+
+on:
+  push:
+    branches: [ffmpeg-source-20260831]
+    paths: [.github/workflows/build-ffmpeg-replay.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Install the Windows cross-compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix nasm ninja-build cmake pkgconf
+      - name: Download pinned source inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bundle/sources bundle/toolchain licenses
+          fetch() { curl --fail --silent --show-error --location --retry 2 --max-time 180 "$1" --output "$2"; }
+          cd bundle/sources
+          fetch 'https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz' ffmpeg-9.1.tar.xz
+          echo '1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433  ffmpeg-9.1.tar.xz' | sha256sum -c
+          fetch 'https://github.com/mirror/x264/archive/0480cb05fa188d37ae87e8f4fd8f1aea3711f7ee.tar.gz' x264-0480cb05fa.tar.gz
+          fetch 'https://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz' lame_3.100.orig.tar.gz
+          echo '83e260acbe4389b54fe08e0bdbf7cddb  lame_3.100.orig.tar.gz' | md5sum -c
+          fetch 'https://github.com/intel/libvpl/archive/674d015bcb294bc39fa276e99a652ea045423e82.tar.gz' libvpl-674d015b.tar.gz
+          fetch 'https://github.com/FFmpeg/nv-codec-headers/archive/eddcea9e27f6b772057c9b3f87de2cc1737faffc.tar.gz' nv-codec-headers-eddcea9e.tar.gz
+          fetch 'https://github.com/GPUOpen-LibrariesAndSDKs/AMF/releases/download/v1.5.3/AMF-headers-v1.5.3.tar.gz' AMF-headers-v1.5.3.tar.gz
+          echo '0f521ad98041f8001147cded4a660127f18b1c27a801a5cd691bda1fa48381be  AMF-headers-v1.5.3.tar.gz' | sha256sum -c
+          cd ..
+          sha256sum sources/* > sources.sha256
+
+          dpkg-query -W 'gcc-mingw-w64*' 'g++-mingw-w64*' 'mingw-w64*' 'binutils-mingw-w64*' nasm cmake ninja-build pkgconf > toolchain/versions.txt
+          x86_64-w64-mingw32-gcc -v 2>> toolchain/versions.txt
+          gcc_version="$(x86_64-w64-mingw32-gcc -dumpfullversion)"
+          printf '%s\n' "https://ftp.gnu.org/gnu/gcc/gcc-$gcc_version/gcc-$gcc_version.tar.xz" > toolchain/upstream-gcc.txt
+          fetch "$(cat toolchain/upstream-gcc.txt)" "toolchain/gcc-$gcc_version.tar.xz"
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update -qq
+          (
+            cd toolchain
+            for package in gcc-mingw-w64-x86-64-posix mingw-w64-x86-64-dev; do
+              spec="$(dpkg-query -W -f='${source:Package}=${source:Version}' "$package")"
+              apt-get source --download-only "$spec"
+              cp "/usr/share/doc/$package/copyright" "$package-COPYRIGHT.txt"
+            done
+          )
+          sha256sum toolchain/* >> sources.sha256
+
+          cat > BUILD-FFMPEG.sh <<'BUILD_SCRIPT'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          
+          bundle="$(cd "$(dirname "$0")" && pwd)"
+          output="$(realpath -m "$1")"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          export LC_ALL=C
+          export SOURCE_DATE_EPOCH=1795564800
+          host=x86_64-w64-mingw32
+          jobs="$(nproc)"
+          prefix="$work/prefix"
+          mkdir -p "$prefix/include/AMF" "$output"
+          cd "$bundle"
+          sha256sum --check sources.sha256
+          
+          extract() {
+            mkdir -p "$work/$2"
+            tar -xf "$bundle/sources/$1" -C "$work/$2" --strip-components=1
+          }
+          
+          extract ffmpeg-9.1.tar.xz ffmpeg
+          extract x264-0480cb05fa.tar.gz x264
+          extract lame_3.100.orig.tar.gz lame
+          extract libvpl-674d015b.tar.gz libvpl
+          extract nv-codec-headers-eddcea9e.tar.gz nv
+          # AMD's header-only release archive has the core/, components/ and CTL/ folders.
+          tar -xf "$bundle/sources/AMF-headers-v1.5.3.tar.gz" -C "$work"
+          amf_header="$(find "$work" -path '*/core/Version.h' -print -quit)"
+          test -n "$amf_header"
+          cp -a "$(dirname "$(dirname "$amf_header")")"/. "$prefix/include/AMF"
+          
+          (
+            cd "$work/x264"
+            ./configure --host="$host" --cross-prefix="$host-" --prefix="$prefix" \
+              --disable-cli --enable-static --disable-opencl --disable-lavf --disable-swscale
+            make -j"$jobs"
+            make install
+          )
+          (
+            cd "$work/lame"
+            CFLAGS="-O2 -DNDEBUG" ./configure --host="$host" --prefix="$prefix" \
+              --disable-shared --enable-static --disable-cpml --disable-frontend --disable-decoder
+            make -j"$jobs"
+            make install
+          )
+          make -C "$work/nv" PREFIX="$prefix" install
+          
+          cmake -S "$work/libvpl" -B "$work/libvpl-build" -G Ninja \
+            -DCMAKE_SYSTEM_NAME=Windows -DCMAKE_C_COMPILER="$host-gcc" -DCMAKE_CXX_COMPILER="$host-g++" \
+            -DCMAKE_RC_COMPILER="$host-windres" -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$prefix" -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_DISPATCHER=ON -DBUILD_DEV=ON -DBUILD_PREVIEW=OFF -DBUILD_TOOLS=OFF \
+            -DBUILD_TOOLS_ONEVPL_EXPERIMENTAL=OFF -DINSTALL_EXAMPLE_CODE=OFF \
+            -DBUILD_SHARED_LIBS=OFF -DBUILD_TESTS=OFF
+          cmake --build "$work/libvpl-build" --parallel "$jobs"
+          cmake --install "$work/libvpl-build"
+          # The dispatcher is C++. FFmpeg links with the C compiler.
+          printf '\nLibs.private: -lstdc++\n' >> "$prefix/lib/pkgconfig/vpl.pc"
+          
+          cd "$work/ffmpeg"
+          export PKG_CONFIG_LIBDIR="$prefix/lib/pkgconfig:$prefix/share/pkgconfig"
+          ./configure --enable-cross-compile --arch=x86_64 --target-os=mingw32 --cross-prefix="$host-" \
+            --pkg-config=pkg-config --pkg-config-flags=--static \
+            --enable-gpl --enable-version3 --enable-static --disable-shared \
+            --disable-autodetect --disable-debug --disable-doc --disable-ffplay --disable-network \
+            --enable-w32threads --enable-d3d11va --enable-dxva2 --enable-ffnvcodec --enable-nvenc \
+            --enable-amf --enable-libvpl --enable-libx264 --enable-libmp3lame \
+            --extra-cflags="-I$prefix/include -ffile-prefix-map=$work=." \
+            --extra-ldflags="-L$prefix/lib -static" --extra-version=Replay.1
+          for feature in H264_NVENC_ENCODER H264_QSV_ENCODER H264_AMF_ENCODER LIBX264_ENCODER \
+                         LIBMP3LAME_ENCODER AAC_ENCODER H264_DECODER HEVC_DECODER MOV_DEMUXER \
+                         MP4_MUXER IMAGE2_MUXER SCALE_FILTER LAVFI_INDEV; do
+            grep -qx "#define CONFIG_${feature} 1" config_components.h
+          done
+          make -j"$jobs" ffmpeg.exe ffprobe.exe
+          for tool in ffmpeg ffprobe; do "$host-strip" -o "$output/$tool.exe" "$tool.exe"; done
+          cp COPYING.GPLv3 "$output/LICENSE.txt"
+          for tool in ffmpeg ffprobe; do
+            "$host-objdump" -p "$output/$tool.exe" | awk '/DLL Name:/{print $3}'
+          done > "$output/PE-IMPORTS.txt"
+          if grep -Ei 'libgcc|libstdc|libwinpthread|libvpl|msys-2' "$output/PE-IMPORTS.txt"; then
+            echo 'Unexpected non-system DLL dependencies' >&2
+            exit 1
+          fi
+          BUILD_SCRIPT
+          chmod +x BUILD-FFMPEG.sh
+          cat > README.md <<'README'
+          # FFmpeg 9.1-Replay.1 source
+
+          Windows x64 static build under GNU GPL, version 3 or later.
+          FFmpeg, x264, LAME, Intel Video Processing Library, NVIDIA Video Codec SDK
+          interface headers and AMD AMF interface headers are included under sources/.
+          The build uses the FFmpeg project's stock codecs and filters plus those
+          dependencies. No upstream source files are patched. NVIDIA, AMD and Intel
+          drivers provide the runtime hardware interfaces on Windows.
+
+          From Ubuntu 24.04, install gcc-mingw-w64-x86-64-posix,
+          g++-mingw-w64-x86-64-posix, nasm, ninja-build, cmake and pkgconf using
+          the versions recorded in toolchain/versions.txt. Run
+          bash BUILD-FFMPEG.sh /absolute/output/path to verify and compile. The
+          corresponding GCC runtime and MinGW-w64 toolchain sources are included
+          under toolchain/. This build uses standard Windows system libraries.
+          README
+
+          ../bundle/BUILD-FFMPEG.sh "$PWD/../windows"
+          cp ../windows/LICENSE.txt COPYING.GPLv3
+          cd ..
+          (cd windows && sha256sum ffmpeg.exe ffprobe.exe > SHA256SUMS.txt)
+          tar -czf ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz -C bundle .
+          sha256sum ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz | tee ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz.sha256
+          cat windows/SHA256SUMS.txt
+          cat windows/PE-IMPORTS.txt
+      - name: Attach Windows binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ffmpeg-9.1-Replay.1-win64
+          path: windows/
+          if-no-files-found: error
+      - name: Attach corresponding sources
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ffmpeg-9.1-Replay.1-win64-source
+          path: ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz*
+          compression-level: 0
+          if-no-files-found: error
