@@ -38,8 +38,9 @@ jobs:
 
           dpkg-query -W 'gcc-mingw-w64*' 'g++-mingw-w64*' 'mingw-w64*' 'binutils-mingw-w64*' nasm cmake ninja-build pkgconf > toolchain/versions.txt
           x86_64-w64-mingw32-gcc -v 2>> toolchain/versions.txt
-          gcc_version="$(x86_64-w64-mingw32-gcc -dumpfullversion)"
+          gcc_version="$(dpkg-query -W -f='${Version}' gcc-mingw-w64-x86-64-posix | cut -d- -f1)"
           printf '%s\n' "https://ftp.gnu.org/gnu/gcc/gcc-$gcc_version/gcc-$gcc_version.tar.xz" > toolchain/upstream-gcc.txt
+          printf 'GCC sources version %s\n' "$gcc_version"
           fetch "$(cat toolchain/upstream-gcc.txt)" "toolchain/gcc-$gcc_version.tar.xz"
           sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update -qq
