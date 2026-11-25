@@ -1,0 +1,112 @@
+name: Publish Replay 2.5.4
+
+on:
+  push:
+    branches: [ffmpeg-source-20260831]
+    paths: [.github/workflows/publish-replay-2.5.4.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-replay-2.5.4
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'Aropatx/Replay'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Verify and publish the tested release
+        shell: bash
+        env:
+          GH_REPO: Aropatx/Replay
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=v2.5.4
+          previous_tag=v2.5.3
+          work=$(mktemp -d "$RUNNER_TEMP/replay-release-2.5.4.XXXXXX")
+          gh api "repos/$GH_REPO/actions/artifacts/15058308528/zip" > "$work/verified.zip"
+          printf '%s  %s\n' '46e68367ac5727cdb9cc9f578079058927c5c0f6a80dfa17d5473b4e2527f534' "$work/verified.zip" | sha256sum --check --strict
+          unzip -q "$work/verified.zip" -d "$work/dist"
+          cd "$work/dist"
+          sha256sum --check --strict <<'CHECKSUMS'
+          e80e5b5178188eb60f6e1d6c1080d513491d5bf95c36350d9ecf8bc9f49af807  build-info.json
+          46640c8c29ee3f07b4e9161a09157cc8357ed79085f4f2725bacb682be3adb7f  ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz
+          0a0f4a400dd1a7db0781b9cc4b836f4fb480769e476dda043506bedf577a0f6f  ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz.sha256
+          9d4fca30313b2dd0617d51c8e8141a4f23ea7740a93bcb78196131ea5652480c  payload-manifest.sha256
+          14c240b23c49abe8eb9ed7b0e65f9cd800ecb5269439b6d451d86172dffe4f40  release-notes-2.5.4.md
+          bbe52a62c9d07bff647c08770d9ac59a4a6c06ea3f89f544277c970373e0d0aa  Replay-Setup-2.5.4-x64.exe
+          602ae853f80f4773527e70c82b5a8f59f0e81f1205e55e0a810e12b8a44cab41  Replay-Setup-2.5.4-x64.exe.sha256
+          bbe52a62c9d07bff647c08770d9ac59a4a6c06ea3f89f544277c970373e0d0aa  Replay-Setup.exe
+          8276101f1e07cd1fdeda0cd65725ab15ba33769c5356ceb6ebb72c12e2e40291  Replay-Setup.exe.sha256
+          CHECKSUMS
+
+          assets=(
+            'Replay-Setup.exe'
+            'Replay-Setup.exe.sha256'
+            'Replay-Setup-2.5.4-x64.exe'
+            'Replay-Setup-2.5.4-x64.exe.sha256'
+            'ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz'
+            'ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz.sha256'
+          )
+          latest_tag() {
+            gh api "repos/$GH_REPO/releases/latest" --jq '.tag_name'
+          }
+          find_release() {
+            gh api --paginate "repos/$GH_REPO/releases?per_page=100" |
+              jq --slurp --compact-output --arg tag "$tag" '[.[][] | select(.tag_name == $tag)] | first // empty'
+          }
+
+          current_tag=$(latest_tag)
+          [[ "$current_tag" == "$previous_tag" || "$current_tag" == "$tag" ]]
+          release=$(find_release)
+          if [[ -z "$release" ]]; then
+            gh release create "$tag" "${assets[@]}" --target main --draft --title "Replay 2.5.4" --notes-file release-notes-2.5.4.md
+            release=$(find_release)
+          fi
+          release_id=$(jq -er '.id' <<<"$release")
+          jq -e --arg tag "$tag" --argjson count "${#assets[@]}" \
+            '.tag_name == $tag and .prerelease == false and (.assets | length) == $count' <<<"$release" > /dev/null
+
+          for file in "${assets[@]}"; do
+            digest="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+            size=$(stat --format=%s "$file")
+            url="https://github.com/$GH_REPO/releases/download/$tag/$file"
+            jq -e --arg file "$file" --arg digest "$digest" --argjson size "$size" --arg url "$url" \
+              '.assets | any(.name == $file and .state == "uploaded" and .digest == $digest and .size == $size and .browser_download_url == $url)' \
+              <<<"$release" > /dev/null
+            printf '%s %s %s\n' "$file" "$size" "$digest"
+          done
+
+          if jq -e '.draft == true' <<<"$release" > /dev/null; then
+            [[ "$(latest_tag)" == "$previous_tag" ]]
+            gh api --method PATCH "repos/$GH_REPO/releases/$release_id" -F draft=false -f make_latest=true --jq '.html_url'
+          fi
+
+          for _ in 1 2 3 4 5 6; do
+            if [[ "$(latest_tag)" == "$tag" ]]; then
+              break
+            fi
+            sleep 5
+          done
+          [[ "$(latest_tag)" == "$tag" ]]
+          printf 'GitHub latest release: %s\n' "$tag"
+      - name: Download and verify the public installer and FFmpeg source
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d "$RUNNER_TEMP/replay-public-2.5.4.XXXXXX")
+          download() {
+            curl --fail --location --silent --show-error --retry 4 --retry-all-errors --max-time 120 "$1" --output "$2"
+          }
+
+          installer="$work/Replay-Setup.exe"
+          source="$work/ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz"
+          download "https://github.com/Aropatx/Replay/releases/latest/download/Replay-Setup.exe" "$installer"
+          printf '%s  %s\n' 'bbe52a62c9d07bff647c08770d9ac59a4a6c06ea3f89f544277c970373e0d0aa' "$installer" | sha256sum --check --strict
+          download "https://github.com/Aropatx/Replay/releases/download/v2.5.4/ffmpeg-9.1-Replay.1-win64-corresponding-source.tar.gz" "$source"
+          printf '%s  %s\n' '46640c8c29ee3f07b4e9161a09157cc8357ed79085f4f2725bacb682be3adb7f' "$source" | sha256sum --check --strict
