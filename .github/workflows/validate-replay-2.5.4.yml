@@ -253,6 +253,7 @@ jobs:
           $existingClipHash = (Get-FileHash -LiteralPath $knownClip).Hash
           $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
           $startup = '"' + (Join-Path $installed 'Replay.exe') + '" --startup'
+          if (-not (Test-Path -LiteralPath $runKey)) { New-Item -Path $runKey | Out-Null }
           New-ItemProperty -LiteralPath $runKey -Name Replay -Value $startup -PropertyType String -Force | Out-Null
           $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{D8574552-AF91-4974-9B3B-22F58F0B1FB4}_is1'
           Invoke-Setup $newInstaller @('/LANG=polish','/REPLAYUPDATE=1') 'upgrade-2.5.3-to-2.5.4'
